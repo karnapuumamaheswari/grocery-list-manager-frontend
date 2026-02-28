@@ -881,7 +881,15 @@ export default function Index() {
     [summary],
   );
 
-  const budgetRemaining = useMemo(() => budgetLimit - totalCost, [budgetLimit, totalCost]);
+  const currentMonthSpend = useMemo(() => Number(summary?.current_month_total ?? 0), [summary]);
+  const projectedMonthSpend = useMemo(
+    () => currentMonthSpend + totalCost,
+    [currentMonthSpend, totalCost],
+  );
+  const budgetRemaining = useMemo(
+    () => budgetLimit - projectedMonthSpend,
+    [budgetLimit, projectedMonthSpend],
+  );
   const isOverBudget = budgetRemaining < 0;
 
   const budgetRemovalSuggestions = useMemo(() => {
@@ -904,14 +912,14 @@ export default function Index() {
 
     const picks: GroceryItem[] = [];
     let recovered = 0;
-    const needed = Math.abs(budgetRemaining);
+    const needed = Math.min(totalCost, Math.abs(budgetRemaining));
     for (const item of ranked) {
       picks.push(item);
       recovered += Number(item.price) * Number(item.quantity);
       if (recovered >= needed) break;
     }
     return picks;
-  }, [budgetRemaining, groceryItems, isOverBudget, pantryItems]);
+  }, [budgetRemaining, groceryItems, isOverBudget, pantryItems, totalCost]);
 
   const pantryBasedRecipes = useMemo(() => {
     const pantryIngredients = new Set<string>();
@@ -2303,7 +2311,7 @@ export default function Index() {
               </div>
             </div>
 
-            <div className="grid gap-2 md:grid-cols-4">
+            <div className="grid gap-2 md:grid-cols-5">
               <div className="section-card">
                 <p className="text-xs text-muted-foreground">Pantry-Ready Recipes</p>
                 <p className="text-lg font-semibold">{pantryBasedRecipes.cookNow.length}</p>
@@ -2541,7 +2549,11 @@ export default function Index() {
               </div>
               <div className="section-card">
                 <p className="text-xs text-muted-foreground">Current Month Spend</p>
-                <p className="text-lg font-semibold">{formatInr(summary?.current_month_total ?? 0)}</p>
+                <p className="text-lg font-semibold">{formatInr(currentMonthSpend)}</p>
+              </div>
+              <div className="section-card">
+                <p className="text-xs text-muted-foreground">Projected Month Spend</p>
+                <p className="text-lg font-semibold">{formatInr(projectedMonthSpend)}</p>
               </div>
               <div className="section-card">
                 <p className="text-xs text-muted-foreground">Monthly Change</p>
@@ -2555,7 +2567,7 @@ export default function Index() {
             {isOverBudget ? (
               <div className="section-card space-y-3 border border-destructive/30 bg-destructive/10">
                 <p className="text-sm font-semibold text-destructive">
-                  Over budget by {formatInr(Math.abs(budgetRemaining))}. Remove less useful items or increase your budget.
+                  Projected monthly spend is over budget by {formatInr(Math.abs(budgetRemaining))}. Remove less useful items or increase your budget.
                 </p>
                 {budgetRemovalSuggestions.length > 0 ? (
                   <div className="space-y-2">
@@ -2592,7 +2604,7 @@ export default function Index() {
             ) : (
               <div className="section-card border border-success/30 bg-success/10">
                 <p className="text-sm font-medium text-success">
-                  You are within budget. Remaining: {formatInr(budgetRemaining)}.
+                  You are within monthly budget. Remaining: {formatInr(budgetRemaining)}.
                 </p>
               </div>
             )}
