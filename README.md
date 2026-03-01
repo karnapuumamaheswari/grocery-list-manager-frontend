@@ -56,15 +56,5 @@ npm run dev
 - No fixed demo credentials.
 - Use Supabase signup/login with your own email and password.
 
-## Screenshots
-Add screenshots before final submission (recommended names):
-- `docs/screenshots/01-home.png`
-- `docs/screenshots/02-dashboard.png`
-- `docs/screenshots/03-grocery.png`
-- `docs/screenshots/04-pantry.png`
-- `docs/screenshots/05-budget.png`
-- `docs/screenshots/06-history.png`
 
-## Video Walkthrough Link
-- Add your final video link here (YouTube Unlisted or Google Drive with public access).
 
