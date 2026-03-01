@@ -12,7 +12,6 @@ import {
   Download,
   Info,
   Plus,
-  RefreshCw,
   Search,
   Eye,
   EyeOff,
@@ -21,7 +20,7 @@ import {
   Sparkles,
   TriangleAlert,
 } from "lucide-react";
-import { NavLink, useLocation, useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { AnimatePresence, motion } from "framer-motion";
 import { toast } from "sonner";
 import {
@@ -41,6 +40,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Navigation } from "@/components/Navigation";
+import { Sidebar } from "@/components/Sidebar";
 import { AuthModal } from "@/components/AuthModal";
 import { ProtectedRoute } from "@/components/ProtectedRoute";
 import { Dashboard } from "@/components/Dashboard";
@@ -57,7 +57,15 @@ import type {
   PurchaseHistoryItem,
 } from "@/types/app";
 
-type Tab = "grocery" | "current" | "pantry" | "recipes" | "budget" | "history";
+type Tab =
+  | "dashboard"
+  | "grocery"
+  | "current"
+  | "pantry"
+  | "recipes"
+  | "budget"
+  | "history"
+  | "analytics";
 type Store = "BigBasket" | "JioMart" | "Blinkit" | "Instamart";
 type DietPreference = "all" | "vegetarian" | "high-protein" | "low-carb" | "gluten-free";
 
@@ -80,35 +88,20 @@ const stores: Record<Store, string> = {
   Instamart: "Instamart",
 };
 
-const tabs: Tab[] = ["grocery", "current", "pantry", "recipes", "budget", "history"];
-const tabLabels: Record<Tab, string> = {
-  grocery: "Grocery",
-  current: "Current List",
-  pantry: "Pantry",
-  recipes: "Recipes",
-  budget: "Budget",
-  history: "History",
-};
-const tabRouteMap: Record<Tab, string> = {
-  grocery: "/grocery",
-  current: "/current-list",
-  pantry: "/pantry",
-  recipes: "/recipes",
-  budget: "/budget",
-  history: "/history",
-};
 const routeTabMap: Record<string, Tab> = {
-  "/": "grocery",
+  "/": "dashboard",
   "/grocery": "grocery",
   "/current-list": "current",
   "/pantry": "pantry",
   "/recipes": "recipes",
   "/budget": "budget",
   "/history": "history",
+  "/analytics": "analytics",
 };
 const SESSION_STARTED_KEY = "grocery_session_started_at";
 const PURCHASE_HISTORY_CACHE_PREFIX = "grocery_purchase_history_";
 const BUDGET_LIMIT_CACHE_PREFIX = "grocery_budget_limit_";
+const SHOPPING_SNAPSHOT_PREFIX = "grocery_shopping_snapshot_";
 const PRODUCT_CATALOG_LIMIT = 1000;
 const DEFAULT_BUDGET_LIMIT = 2500;
 const sessionTimeoutMinutes = Number(import.meta.env.VITE_SESSION_TIMEOUT_MINUTES ?? "60");
@@ -120,12 +113,8 @@ const formatInr = (value: number) =>
     Number(value ?? 0),
   );
 
-const startOfTodayUtc = () => {
-  const now = new Date();
-  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-};
-
 const getHistoryCacheKey = (userId: string) => `${PURCHASE_HISTORY_CACHE_PREFIX}${userId}`;
+const getShoppingSnapshotKey = (userId: string) => `${SHOPPING_SNAPSHOT_PREFIX}${userId}`;
 
 const readCachedHistory = (userId: string): PurchaseHistoryItem[] => {
   try {
@@ -162,7 +151,7 @@ const buildStoreSearchUrl = (store: Store, itemName: string) => {
   }
 };
 
-const toTabFromPath = (pathname: string): Tab => routeTabMap[pathname] ?? "grocery";
+const toTabFromPath = (pathname: string): Tab => routeTabMap[pathname] ?? "dashboard";
 
 const toCategory = (value?: string | null): Category => {
   const normalized = String(value ?? "").trim().toLowerCase();
@@ -492,12 +481,14 @@ export default function Index() {
   const [protectedRouteModalOpen, setProtectedRouteModalOpen] = useState(false);
   const [confirmFinalize, setConfirmFinalize] = useState(false);
   const [confirmBudgetUpdate, setConfirmBudgetUpdate] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
   const [activeTab, setActiveTab] = useState<Tab>(() => toTabFromPath(location.pathname));
   const [loadingData, setLoadingData] = useState(false);
   const [actionError, setActionError] = useState("");
   const [actionInfo, setActionInfo] = useState("");
   const [usingCachedHistory, setUsingCachedHistory] = useState(false);
+  const [shoppingSnapshotAt, setShoppingSnapshotAt] = useState<string | null>(null);
 
   const [groceryItems, setGroceryItems] = useState<GroceryItem[]>([]);
   const [pantryItems, setPantryItems] = useState<PantryItem[]>([]);
@@ -685,6 +676,24 @@ export default function Index() {
   }, [budgetLimit, session]);
 
   useEffect(() => {
+    if (!session?.user?.id) {
+      setShoppingSnapshotAt(null);
+      return;
+    }
+    try {
+      const raw = localStorage.getItem(getShoppingSnapshotKey(session.user.id));
+      if (!raw) {
+        setShoppingSnapshotAt(null);
+        return;
+      }
+      const parsed = JSON.parse(raw) as { saved_at?: string } | null;
+      setShoppingSnapshotAt(parsed?.saved_at ?? null);
+    } catch {
+      setShoppingSnapshotAt(null);
+    }
+  }, [session]);
+
+  useEffect(() => {
     const tabFromPath = toTabFromPath(location.pathname);
     setActiveTab((current) => (current === tabFromPath ? current : tabFromPath));
   }, [location.pathname]);
@@ -730,16 +739,15 @@ export default function Index() {
     return Math.round((checkedCount / groceryItems.length) * 100);
   }, [checkedCount, groceryItems.length]);
 
-  const expiringSoon = useMemo(() => {
-    const today = startOfTodayUtc();
-    const threeDaysOut = new Date(today);
-    threeDaysOut.setUTCDate(threeDaysOut.getUTCDate() + 3);
-    return pantryItems.filter((item) => {
-      if (!item.expiry_date) return false;
-      const exp = new Date(`${item.expiry_date}T00:00:00Z`);
-      return exp >= today && exp <= threeDaysOut;
-    });
-  }, [pantryItems]);
+  const expiringSoon = useMemo(
+    () => pantryItems.filter((item) => item.status === "Expiring Soon"),
+    [pantryItems],
+  );
+
+  const expiredItems = useMemo(
+    () => pantryItems.filter((item) => item.status === "Expired"),
+    [pantryItems],
+  );
 
   const nameQuery = useMemo(() => newItemName.trim().toLowerCase(), [newItemName]);
 
@@ -1402,6 +1410,11 @@ export default function Index() {
     event.preventDefault();
     setActionError("");
     setActionInfo("");
+    if (!token) {
+      setProtectedRouteModalOpen(true);
+      setActionError("Please log in to add pantry items.");
+      return;
+    }
     const itemName = pantryName.trim();
     if (!itemName) {
       setActionError("Please enter a pantry item name");
@@ -1665,6 +1678,34 @@ export default function Index() {
     }
   }
 
+  function saveForShopping() {
+    if (!session?.user?.id) return;
+    if (groceryItems.length === 0) {
+      setActionError("Your grocery list is empty.");
+      return;
+    }
+
+    const snapshot = {
+      saved_at: new Date().toISOString(),
+      total_cost: totalCost,
+      items: groceryItems.map((item) => ({
+        id: item.id,
+        name: item.name,
+        quantity: item.quantity,
+        price: item.price,
+        category: item.category,
+      })),
+    };
+
+    try {
+      localStorage.setItem(getShoppingSnapshotKey(session.user.id), JSON.stringify(snapshot));
+      setShoppingSnapshotAt(snapshot.saved_at);
+      toast.success("Shopping list saved.");
+    } catch {
+      setActionError("Could not save list for shopping.");
+    }
+  }
+
   async function addMissingIngredients(recipeName: string, ingredients: string[]) {
     if (!token) return;
     const normalizedCurrent = new Set(groceryItems.map((item) => item.name.trim().toLowerCase()));
@@ -1721,11 +1762,13 @@ export default function Index() {
         <div className="floating-orb absolute bottom-8 right-10 h-64 w-64 rounded-full bg-accent/10 blur-3xl" />
       </div>
 
-      <Navigation
-        displayName={sessionDisplayName}
-        isLoggedIn={!!session}
-        onLogout={handleLogout}
-      />
+      {!session ? (
+        <Navigation
+          displayName={sessionDisplayName}
+          isLoggedIn={false}
+          onLogout={handleLogout}
+        />
+      ) : null}
 
       <AuthModal
         isOpen={authModalOpen}
@@ -1986,80 +2029,47 @@ export default function Index() {
           </main>
         )
       ) : (
-        <main className="mx-auto max-w-7xl space-y-4 px-4 py-6 pt-24">
-        <section className="glass-panel shimmer-border hover-lift p-4">
-          <div className="flex flex-wrap gap-2 text-xs">
-            <span className="metric-chip">
-              List total: <strong>{formatInr(totalCost)}</strong>
-            </span>
-            <span className="metric-chip">
-              Items: <strong>{groceryItems.length}</strong>
-            </span>
-            <span className="metric-chip">
-              Low stock: <strong>{lowStock.length}</strong>
-            </span>
-            <span className="metric-chip">
-              This month: <strong>{formatInr(summary?.current_month_total ?? 0)}</strong>
-            </span>
-          </div>
-        </section>
-
-        <section className="glass-panel hover-lift p-3">
-          <div className="flex flex-wrap items-center gap-2">
-            {tabs.map((tab) => (
-              <NavLink
-                key={tab}
-                to={tabRouteMap[tab]}
-                onClick={() => {
-                  if (!session && (tab === "pantry" || tab === "history" || tab === "budget")) {
-                    setProtectedRouteModalOpen(true);
-                  }
-                }}
-                className={({ isActive }) =>
-                  [
-                    "tab-pill",
-                    isActive
-                      ? "tab-pill-active"
-                      : "tab-pill-idle",
-                  ].join(" ")
-                }
-              >
-                {tabLabels[tab]}
-              </NavLink>
-            ))}
-            <Button variant="outline" onClick={loadAll} disabled={loadingData} className="ml-auto gap-2 rounded-full border-accent/40 hover:border-accent">
-              <RefreshCw className={`h-4 w-4 ${loadingData ? "animate-spin" : ""}`} />
-              {loadingData ? "Refreshing..." : "Refresh"}
-            </Button>
-          </div>
-        </section>
-
-        {actionError ? <p className="text-sm rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-destructive">{actionError}</p> : null}
-        {actionInfo ? <p className="text-sm rounded-lg border border-primary/30 bg-primary/10 px-3 py-2 text-primary">{actionInfo}</p> : null}
-        {usingCachedHistory ? (
-          <p className="text-sm rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-warning">
-            <Info className="mr-2 inline h-4 w-4 align-text-bottom" />
-            Offline mode: showing cached purchase history (last synced data).
-          </p>
-        ) : null}
-
-        {location.pathname === "/" && session && (
-          <Dashboard
-            groceryItems={groceryItems}
-            pantryItems={pantryItems}
-            summary={summary}
+        <div className="lg:flex">
+          <Sidebar
+            collapsed={sidebarCollapsed}
+            onToggleCollapse={() => setSidebarCollapsed((current) => !current)}
+            onLogout={handleLogout}
+            expiringCount={expiringSoon.length + expiredItems.length}
           />
+          <main
+            className="mx-auto w-full max-w-7xl space-y-4 px-4 py-6 pt-20 transition-all lg:pt-6"
+          >
+        <div className="space-y-4">
+            {actionError ? <p className="text-sm rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-destructive">{actionError}</p> : null}
+            {actionInfo ? <p className="text-sm rounded-lg border border-primary/30 bg-primary/10 px-3 py-2 text-primary">{actionInfo}</p> : null}
+            {usingCachedHistory ? (
+              <p className="text-sm rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-warning">
+                <Info className="mr-2 inline h-4 w-4 align-text-bottom" />
+                Offline mode: showing cached purchase history (last synced data).
+              </p>
+            ) : null}
+
+            <AnimatePresence mode="wait">
+              <motion.section
+                key={activeTab}
+                initial={{ opacity: 0, y: 14, scale: 0.99 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: -10, scale: 0.995 }}
+                transition={{ duration: 0.26, ease: "easeOut" }}
+                className="space-y-4"
+              >
+        {activeTab === "dashboard" && (
+          <section className="space-y-4">
+            <Dashboard pantryItems={pantryItems} summary={summary} />
+            <section className="glass-panel p-5">
+              <h2 className="text-xl font-semibold">Quick Actions</h2>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Use the left navigation to manage grocery list, pantry, budget, history, and analytics.
+              </p>
+            </section>
+          </section>
         )}
 
-        <AnimatePresence mode="wait">
-          <motion.section
-            key={activeTab}
-            initial={{ opacity: 0, y: 14, scale: 0.99 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: -10, scale: 0.995 }}
-            transition={{ duration: 0.26, ease: "easeOut" }}
-            className="space-y-4"
-          >
         {activeTab === "grocery" && (
           <section className="glass-panel shimmer-border space-y-4 p-5">
             <div className="flex items-center justify-between">
@@ -2175,6 +2185,15 @@ export default function Index() {
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <h2 className="text-xl font-semibold">Total Cost: {formatInr(totalCost)}</h2>
                 <div className="flex flex-wrap gap-2">
+                  <Button variant="outline" onClick={shareCurrentList} className="gap-2">
+                    <Share2 className="h-4 w-4" /> Share
+                  </Button>
+                  <Button variant="outline" onClick={copyCurrentList} className="gap-2">
+                    <Copy className="h-4 w-4" /> Copy
+                  </Button>
+                  <Button variant="outline" onClick={saveForShopping} className="gap-2">
+                    <ClipboardList className="h-4 w-4" /> Save for Shopping
+                  </Button>
                   <Button variant="outline" onClick={exportPdf} className="gap-2 hover:border-accent/60">
                     <Download className="h-4 w-4" /> Export PDF
                   </Button>
@@ -2187,6 +2206,11 @@ export default function Index() {
                   </Button>
                 </div>
               </div>
+              {shoppingSnapshotAt ? (
+                <p className="text-xs text-muted-foreground">
+                  Saved for shopping on {new Date(shoppingSnapshotAt).toLocaleString()}.
+                </p>
+              ) : null}
 
               <GroceryTable
                 items={groupedGrocery}
@@ -2275,220 +2299,228 @@ export default function Index() {
         )}
 
         {activeTab === "recipes" && (
-          <section className="glass-panel shimmer-border space-y-4 p-5">
-            <div className="flex flex-wrap items-center justify-between gap-3">
+          <section className="glass-panel space-y-5 p-5">
+            <div className="flex flex-wrap items-end justify-between gap-3">
               <div>
-                <h2 className="text-2xl font-semibold">Recipe Suggestions</h2>
-                <p className="text-sm text-muted-foreground">
-                  Suggestions are based only on ingredients currently in your pantry.
+                <h2 className="text-2xl font-semibold text-foreground">Recipes</h2>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  Find what you can cook now and what ingredients to buy next.
                 </p>
               </div>
-              <div className="w-full space-y-2 md:max-w-xl">
-                <div className="grid gap-2 md:grid-cols-2">
-                  <div>
-                    <label className="mb-1 block text-xs text-muted-foreground">Ask Recipe By Name</label>
-                    <Input
-                      value={recipeQuery}
-                      onChange={(event) => setRecipeQuery(event.target.value)}
-                      placeholder="Type recipe name: paneer, rajma, dosa..."
-                    />
-                  </div>
-                  <div>
-                    <label className="mb-1 block text-xs text-muted-foreground">Diet Preference</label>
-                    <select
-                      className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                      value={dietPreference}
-                      onChange={(event) => setDietPreference(event.target.value as DietPreference)}
-                    >
-                      <option value="all">All</option>
-                      <option value="vegetarian">Vegetarian</option>
-                      <option value="high-protein">High Protein</option>
-                      <option value="low-carb">Low Carb</option>
-                      <option value="gluten-free">Gluten Free</option>
-                    </select>
-                  </div>
-                </div>
+              <div className="grid w-full gap-2 md:max-w-xl md:grid-cols-2">
+                <Input
+                  value={recipeQuery}
+                  onChange={(event) => setRecipeQuery(event.target.value)}
+                  placeholder="Search recipe name..."
+                />
+                <select
+                  className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  value={dietPreference}
+                  onChange={(event) => setDietPreference(event.target.value as DietPreference)}
+                >
+                  <option value="all">All Diets</option>
+                  <option value="vegetarian">Vegetarian</option>
+                  <option value="high-protein">High Protein</option>
+                  <option value="low-carb">Low Carb</option>
+                  <option value="gluten-free">Gluten Free</option>
+                </select>
               </div>
             </div>
 
-            <div className="grid gap-2 md:grid-cols-5">
+            <div className="grid gap-3 md:grid-cols-3">
               <div className="section-card">
-                <p className="text-xs text-muted-foreground">Pantry-Ready Recipes</p>
-                <p className="text-lg font-semibold">{pantryBasedRecipes.cookNow.length}</p>
+                <p className="text-xs text-muted-foreground">Cook Now</p>
+                <p className="text-2xl font-semibold text-foreground">{pantryBasedRecipes.cookNow.length}</p>
               </div>
               <div className="section-card">
-                <p className="text-xs text-muted-foreground">Recipes Needing Items</p>
-                <p className="text-lg font-semibold">{pantryBasedRecipes.needItems.length}</p>
+                <p className="text-xs text-muted-foreground">Need Ingredients</p>
+                <p className="text-2xl font-semibold text-foreground">{pantryBasedRecipes.needItems.length}</p>
               </div>
               <div className="section-card">
-                <p className="text-xs text-muted-foreground">Pantry Ingredients Tracked</p>
-                <p className="text-lg font-semibold">{pantryItems.length}</p>
-              </div>
-              <div className="section-card">
-                <p className="text-xs text-muted-foreground">Recipes in Results</p>
-                <p className="text-lg font-semibold">{pantryBasedRecipes.all.length}</p>
+                <p className="text-xs text-muted-foreground">Results</p>
+                <p className="text-2xl font-semibold text-foreground">{pantryBasedRecipes.all.length}</p>
               </div>
             </div>
 
             {pantryBasedRecipes.all.length === 0 ? (
               <div className="section-card">
                 <p className="text-sm text-muted-foreground">
-                  No recipe found for "{recipeQuery}". Try another name (example: dal, paneer, chicken, dosa).
+                  No recipes found. Try another name or change the diet filter.
                 </p>
               </div>
             ) : null}
 
-            <div className="space-y-3">
-              <h3 className="text-lg font-semibold">Cook Now (Pantry Only)</h3>
-              {pantryBasedRecipes.cookNow.length === 0 ? (
-                <div className="section-card">
+            <div className="grid gap-4 lg:grid-cols-2">
+              <div className="section-card space-y-3">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-lg font-semibold text-foreground">Cook Now</h3>
+                  <Badge className="bg-success/15 text-success hover:bg-success/20">Ready</Badge>
+                </div>
+                {pantryBasedRecipes.cookNow.length === 0 ? (
                   <p className="text-sm text-muted-foreground">
-                    No complete recipe available with current pantry items for this filter.
+                    No complete recipes available with current pantry items.
                   </p>
-                </div>
-              ) : (
-                <div className="grid gap-3 md:grid-cols-2">
-                  {pantryBasedRecipes.cookNow.map((recipe) => (
-                    <div key={recipe.id} className="section-card space-y-2">
-                      <div className="flex items-center justify-between gap-3">
-                        <p className="font-semibold">{recipe.name}</p>
-                        <Badge variant="secondary">Ready</Badge>
-                      </div>
-                      <p className="text-xs text-muted-foreground">
-                        Nutrition est.: {recipe.calories} kcal | {recipe.protein}g protein
-                      </p>
-                      <p className="text-xs text-muted-foreground">
-                        {recipe.matchedCount}/{recipe.totalCount} pantry ingredients available
-                      </p>
-                      <div className="flex flex-wrap gap-2 text-xs">
-                        {recipe.diet.map((tag) => (
-                          <span key={`${recipe.id}-${tag}`} className="rounded-full bg-secondary px-2 py-1">
-                            {tag}
-                          </span>
-                        ))}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            <div className="space-y-3">
-              <h3 className="text-lg font-semibold">Need Ingredients (Suggested to Buy)</h3>
-              {pantryBasedRecipes.needItems.length === 0 ? (
-                <div className="section-card">
-                  <p className="text-sm text-muted-foreground">
-                    Great. All filtered recipes can be cooked with pantry items only.
-                  </p>
-                </div>
-              ) : (
-                <div className="grid gap-3 md:grid-cols-2">
-                  {pantryBasedRecipes.needItems.map((recipe) => (
-                    <div key={recipe.id} className="section-card space-y-2">
-                      <div className="flex items-center justify-between gap-3">
-                        <p className="font-semibold">{recipe.name}</p>
-                        <Badge variant="secondary">{recipe.matchPercent}% pantry match</Badge>
-                      </div>
-                      <p className="text-xs text-muted-foreground">
-                        Missing {recipe.missingIngredients.length} ingredient(s)
-                      </p>
-                      <div className="flex flex-wrap gap-2">
-                        {recipe.missingIngredients.map((ingredient) => (
-                          <span
-                            key={`${recipe.id}-${ingredient}`}
-                            className="rounded-full border border-border/70 bg-background/50 px-2 py-1 text-xs"
-                          >
-                            {ingredient}
-                          </span>
-                        ))}
-                      </div>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        className="w-full gap-2"
-                        onClick={() => addMissingIngredients(recipe.name, recipe.missingIngredients)}
-                      >
-                        <ChefHat className="h-4 w-4" />
-                        Add Missing to Grocery List
-                      </Button>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            <div className="section-card space-y-3">
-              <div className="flex items-center justify-between">
-                <p className="font-semibold">Meal Plan (Weekly)</p>
-                <p className="text-xs text-muted-foreground">Saved locally per user.</p>
-              </div>
-              <div className="grid gap-2 md:grid-cols-2">
-                {Object.keys(plannedMeals).map((day) => (
-                  <div key={day}>
-                    <label className="mb-1 block text-xs text-muted-foreground">{day}</label>
-                    <select
-                      className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                      value={plannedMeals[day]}
-                      onChange={(event) => updateMealPlan(day, event.target.value)}
-                    >
-                      <option value="">No meal selected</option>
-                      {pantryBasedRecipes.cookNow.map((recipe) => (
-                        <option key={`${day}-${recipe.id}`} value={recipe.name}>
-                          {recipe.name}
-                        </option>
-                      ))}
-                    </select>
+                ) : (
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    {pantryBasedRecipes.cookNow.map((recipe) => {
+                      const matchPercent = Math.round((recipe.matchedCount / recipe.totalCount) * 100);
+                      return (
+                        <div
+                          key={recipe.id}
+                          className="rounded-xl border border-success/35 bg-success/5 p-3 space-y-2"
+                        >
+                          <div className="h-20 rounded-lg bg-gradient-to-br from-success/25 to-primary/25 flex items-center justify-center">
+                            <ChefHat className="h-8 w-8 text-success" />
+                          </div>
+                          <div className="flex items-center justify-between gap-2">
+                            <p className="text-sm font-semibold">{recipe.name}</p>
+                            <span className="text-xs text-success font-medium">{matchPercent}%</span>
+                          </div>
+                          <div className="h-1.5 w-full rounded-full bg-secondary">
+                            <div className="h-full rounded-full bg-success" style={{ width: `${matchPercent}%` }} />
+                          </div>
+                          <p className="text-xs text-muted-foreground">
+                            {recipe.calories} kcal | {recipe.protein}g protein
+                          </p>
+                          <div className="flex flex-wrap gap-1.5">
+                            {recipe.ingredients.map((ingredient) => (
+                              <span
+                                key={`${recipe.id}-ing-${ingredient}`}
+                                className="rounded-full border border-success/40 bg-background/80 px-2 py-0.5 text-xs"
+                              >
+                                {ingredient}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
-                ))}
+                )}
+              </div>
+
+              <div className="section-card space-y-3">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-lg font-semibold text-foreground">Need Ingredients</h3>
+                  <Badge variant="secondary">Buy Suggestions</Badge>
+                </div>
+                {pantryBasedRecipes.needItems.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">
+                    Great. Current pantry can handle all filtered recipes.
+                  </p>
+                ) : (
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    {pantryBasedRecipes.needItems.map((recipe) => (
+                      <div key={recipe.id} className="rounded-xl border border-border/70 bg-background/60 p-3 space-y-2">
+                        <div className="h-20 rounded-lg bg-gradient-to-br from-accent/20 to-primary/20 flex items-center justify-center">
+                          <ChefHat className="h-8 w-8 text-primary" />
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <p className="text-sm font-semibold">{recipe.name}</p>
+                          <span className="text-xs text-muted-foreground">{recipe.matchPercent}% match</span>
+                        </div>
+                        <div className="h-1.5 w-full rounded-full bg-secondary">
+                          <div className="h-full rounded-full bg-primary" style={{ width: `${recipe.matchPercent}%` }} />
+                        </div>
+                        <div className="flex flex-wrap gap-1.5">
+                          {recipe.missingIngredients.map((ingredient) => (
+                            <span
+                              key={`${recipe.id}-${ingredient}`}
+                              className="rounded-full border border-border/70 bg-card px-2 py-0.5 text-xs"
+                            >
+                              {ingredient}
+                            </span>
+                          ))}
+                        </div>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          className="w-full"
+                          onClick={() => addMissingIngredients(recipe.name, recipe.missingIngredients)}
+                        >
+                          Add Missing
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
           </section>
         )}
 
         {activeTab === "pantry" && (
-          <section className="glass-panel shimmer-border space-y-4 p-5">
+          <section className="glass-panel space-y-5 p-5">
             <div className="flex items-center justify-between">
-              <h2 className="text-2xl font-semibold">Pantry Control Center</h2>
+              <div>
+                <h2 className="text-2xl font-semibold text-foreground">Pantry Control Center</h2>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  Add stock, set expiry alerts, and monitor at-risk items.
+                </p>
+              </div>
               <Badge variant="secondary" className="rounded-full px-3 py-1 text-xs">
                 {pantryItems.length} tracked
               </Badge>
             </div>
-            <form className="rounded-xl border border-border/70 bg-background/50 p-4 grid gap-3 md:grid-cols-4" onSubmit={addPantryItem}>
-              <Input placeholder="Pantry item name" value={pantryName} onChange={(event) => setPantryName(event.target.value)} className="md:col-span-2" />
-              <Input type="number" min="0" step="1" value={pantryQty} onChange={(event) => setPantryQty(event.target.value)} />
-              <Input type="date" value={pantryExpiry} onChange={(event) => setPantryExpiry(event.target.value)} />
-              <Button type="submit" className="md:col-span-4 brand-gradient-btn">
+
+            <div className="grid gap-3 md:grid-cols-3">
+              <div className="section-card">
+                <p className="text-xs text-muted-foreground">Total Items</p>
+                <p className="text-2xl font-semibold text-foreground">{pantryItems.length}</p>
+              </div>
+              <div className="section-card border-warning/30 bg-warning/10">
+                <p className="text-xs text-warning">Expiring Soon</p>
+                <p className="text-2xl font-semibold text-warning">{expiringSoon.length}</p>
+              </div>
+              <div className="section-card border-destructive/30 bg-destructive/10">
+                <p className="text-xs text-destructive">Expired</p>
+                <p className="text-2xl font-semibold text-destructive">{expiredItems.length}</p>
+              </div>
+            </div>
+
+            <form className="section-card grid gap-3 md:grid-cols-2 xl:grid-cols-4" onSubmit={addPantryItem}>
+              <div className="xl:col-span-2">
+                <label className="mb-1 block text-xs text-muted-foreground">Item Name</label>
+                <Input
+                  placeholder="Rice, Milk, Eggs..."
+                  value={pantryName}
+                  onChange={(event) => setPantryName(event.target.value)}
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs text-muted-foreground">Quantity</label>
+                <Input type="number" min="0" step="1" value={pantryQty} onChange={(event) => setPantryQty(event.target.value)} />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs text-muted-foreground">Expiry Date</label>
+                <Input type="date" value={pantryExpiry} onChange={(event) => setPantryExpiry(event.target.value)} />
+              </div>
+              <Button type="submit" className="xl:col-span-4 brand-gradient-btn">
                 <Plus className="mr-2 inline h-4 w-4" />
                 Add to Pantry
               </Button>
             </form>
 
-            {(lowStock.length > 0 || expiringSoon.length > 0) && (
-              <div className="rounded-xl border border-warning/30 bg-warning/10 p-4 space-y-2">
-                <h3 className="text-lg font-semibold text-warning">
-                  <TriangleAlert className="mr-2 inline h-5 w-5 align-text-bottom" />
-                  Pantry Alerts
+            {(lowStock.length > 0 || expiringSoon.length > 0 || expiredItems.length > 0) && (
+              <div className="section-card space-y-3">
+                <h3 className="text-base font-semibold text-foreground">
+                  <TriangleAlert className="mr-2 inline h-4 w-4 align-text-bottom text-warning" />
+                  Alerts
                 </h3>
-                {lowStock.length > 0 && (
-                  <div>
-                    <p className="text-sm font-medium text-warning">Low Stock Items:</p>
-                    <ul className="text-sm text-warning space-y-1 mt-1">
-                      {lowStock.map((item) => (
-                        <li key={item.id}>- {item.item_name} (qty: {item.quantity})</li>
-                      ))}
-                    </ul>
+                <div className="grid gap-3 md:grid-cols-3">
+                  <div className="rounded-lg border border-warning/30 bg-warning/10 p-3">
+                    <p className="text-xs font-medium text-warning">Low Stock</p>
+                    <p className="mt-1 text-xl font-semibold text-warning">{lowStock.length}</p>
                   </div>
-                )}
-                {expiringSoon.length > 0 && (
-                  <div>
-                    <p className="text-sm font-medium text-destructive">Expiring Soon (3 days):</p>
-                    <ul className="text-sm text-destructive space-y-1 mt-1">
-                      {expiringSoon.map((item) => (
-                        <li key={item.id}>- {item.item_name} (expires {item.expiry_date})</li>
-                      ))}
-                    </ul>
+                  <div className="rounded-lg border border-warning/30 bg-warning/10 p-3">
+                    <p className="text-xs font-medium text-warning">Expiring Soon</p>
+                    <p className="mt-1 text-xl font-semibold text-warning">{expiringSoon.length}</p>
                   </div>
-                )}
+                  <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-3">
+                    <p className="text-xs font-medium text-destructive">Expired</p>
+                    <p className="mt-1 text-xl font-semibold text-destructive">{expiredItems.length}</p>
+                  </div>
+                </div>
               </div>
             )}
 
@@ -2631,6 +2663,63 @@ export default function Index() {
           </section>
         )}
 
+        {activeTab === "analytics" && (
+          <section className="glass-panel shimmer-border p-5 space-y-4">
+            <div className="flex items-center justify-between">
+              <h2 className="text-xl font-semibold">Analytics</h2>
+              <Badge variant="secondary" className="rounded-full px-3 py-1 text-xs">
+                Insights
+              </Badge>
+            </div>
+
+            <div className="grid gap-2 md:grid-cols-3">
+              <div className="section-card">
+                <p className="text-xs text-muted-foreground">Current Month</p>
+                <p className="text-lg font-semibold">{formatInr(summary?.current_month_total ?? 0)}</p>
+              </div>
+              <div className="section-card">
+                <p className="text-xs text-muted-foreground">Previous Month</p>
+                <p className="text-lg font-semibold">{formatInr(summary?.previous_month_total ?? 0)}</p>
+              </div>
+              <div className="section-card">
+                <p className="text-xs text-muted-foreground">Trend</p>
+                <p className="text-lg font-semibold capitalize">{summary?.trend ?? "down"}</p>
+              </div>
+            </div>
+
+            <div className="grid gap-3 lg:grid-cols-2">
+              <div className="section-card">
+                <p className="mb-2 text-sm font-medium">Previous vs Current Month</p>
+                <div className="h-56 w-full">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={budgetComparisonData}>
+                      <CartesianGrid strokeDasharray="3 3" opacity={0.25} />
+                      <XAxis dataKey="label" />
+                      <YAxis />
+                      <Tooltip formatter={(value: number) => formatInr(Number(value))} />
+                      <Bar dataKey="amount" radius={[6, 6, 0, 0]} fill="hsl(var(--primary))" />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+              <div className="section-card">
+                <p className="mb-2 text-sm font-medium">Recent Purchase Trend</p>
+                <div className="h-56 w-full">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={recentPurchaseTrendData}>
+                      <CartesianGrid strokeDasharray="3 3" opacity={0.25} />
+                      <XAxis dataKey="purchase" />
+                      <YAxis />
+                      <Tooltip formatter={(value: number) => formatInr(Number(value))} />
+                      <Line type="monotone" dataKey="amount" stroke="hsl(var(--accent))" strokeWidth={2.5} dot={{ r: 3 }} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+            </div>
+          </section>
+        )}
+
         {activeTab === "history" && (
           <section className="glass-panel shimmer-border p-5 space-y-4">
             <h2 className="text-xl font-semibold">Purchase History</h2>
@@ -2701,72 +2790,9 @@ export default function Index() {
                   </div>
                 </div>
 
-                <div className="grid gap-2 md:grid-cols-3">
-                  <div className="section-card">
-                    <p className="text-xs text-muted-foreground">Matched Purchases</p>
-                    <p className="text-lg font-semibold">{filteredHistory.length}</p>
-                  </div>
-                  <div className="section-card">
-                    <p className="text-xs text-muted-foreground">Average (Filtered)</p>
-                    <p className="text-lg font-semibold">{formatInr(filteredHistoryAverage)}</p>
-                  </div>
-                  <div className="section-card">
-                    <p className="text-xs text-muted-foreground">Top Record Amount</p>
-                    <p className="text-lg font-semibold">
-                      {formatInr(Number(filteredHistory[0]?.total_amount ?? 0))}
-                    </p>
-                  </div>
-                </div>
-
-                <div className="grid gap-3 lg:grid-cols-2">
-                  <div className="section-card">
-                    <p className="mb-2 text-sm font-medium">Spending by Month (Last 6 Months)</p>
-                    <div className="h-56 w-full">
-                      <ResponsiveContainer width="100%" height="100%">
-                        <BarChart data={monthlyHistoryChartData}>
-                          <CartesianGrid strokeDasharray="3 3" opacity={0.25} />
-                          <XAxis dataKey="month" />
-                          <YAxis />
-                          <Tooltip formatter={(value: number) => formatInr(Number(value))} />
-                          <Bar dataKey="amount" radius={[6, 6, 0, 0]} fill="hsl(var(--accent))" />
-                        </BarChart>
-                      </ResponsiveContainer>
-                    </div>
-                    <p className="text-xs text-muted-foreground">
-                      This chart helps identify high-spend months quickly.
-                    </p>
-                  </div>
-
-                  <div className="section-card">
-                    <p className="mb-2 text-sm font-medium">Recent Purchase Trend (Last 10 Purchases)</p>
-                    <div className="h-56 w-full">
-                      <ResponsiveContainer width="100%" height="100%">
-                        <LineChart data={recentPurchaseTrendData}>
-                          <CartesianGrid strokeDasharray="3 3" opacity={0.25} />
-                          <XAxis dataKey="purchase" />
-                          <YAxis />
-                          <Tooltip
-                            formatter={(value: number) => formatInr(Number(value))}
-                            labelFormatter={(label, payload) => {
-                              const point = payload?.[0]?.payload as { date?: string } | undefined;
-                              return point?.date ? `${label} (${point.date})` : String(label);
-                            }}
-                          />
-                          <Line
-                            type="monotone"
-                            dataKey="amount"
-                            stroke="hsl(var(--primary))"
-                            strokeWidth={2.5}
-                            dot={{ r: 3 }}
-                          />
-                        </LineChart>
-                      </ResponsiveContainer>
-                    </div>
-                    <p className="text-xs text-muted-foreground">
-                      A rising line means your checkout totals are increasing recently.
-                    </p>
-                  </div>
-                </div>
+                <p className="text-sm text-muted-foreground">
+                  {filteredHistory.length} purchase record(s) match current filters.
+                </p>
 
                 <div className="space-y-2">
                   <p className="text-sm font-medium">Records</p>
@@ -2835,7 +2861,9 @@ export default function Index() {
         
           </motion.section>
         </AnimatePresence>
+          </div>
         </main>
+        </div>
       )}
     </div>
   );

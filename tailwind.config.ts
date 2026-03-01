@@ -78,6 +78,14 @@ export default {
         "pantry-cat": "hsl(var(--pantry-cat))",
         beverages: "hsl(var(--beverages))",
         snacks: "hsl(var(--snacks))",
+        brand: {
+          primary: "#2563EB",
+          accent: "#1D4ED8",
+          background: "#F8FAFC",
+          card: "#FFFFFF",
+          warning: "#60A5FA",
+          danger: "#2563EB",
+        },
       },
       borderRadius: {
         lg: "var(--radius)",

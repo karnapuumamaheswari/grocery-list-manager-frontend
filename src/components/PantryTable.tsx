@@ -19,17 +19,41 @@ interface PantryTableProps {
   onEditExpiryChange: (value: string) => void;
 }
 
-function isExpiringWithin3Days(expiryDate: string | null): boolean {
-  if (!expiryDate) return false;
-  const today = new Date();
-  const threeDaysOut = new Date(today);
-  threeDaysOut.setDate(threeDaysOut.getDate() + 3);
-  const expiry = new Date(expiryDate);
-  return expiry >= today && expiry <= threeDaysOut;
-}
-
 function isLowStock(quantity: number): boolean {
   return Number(quantity) <= 2;
+}
+
+function statusMeta(status: PantryItem["status"]) {
+  if (status === "Expired") {
+    return {
+      badgeClass: "bg-destructive/20 text-destructive",
+      label: "Expired",
+      rowClass: "border-destructive/50 bg-destructive/5",
+      progressClass: "bg-destructive",
+    };
+  }
+  if (status === "Expiring Soon") {
+    return {
+      badgeClass: "bg-warning/20 text-warning",
+      label: "Expiring Soon",
+      rowClass: "border-warning/50 bg-warning/5",
+      progressClass: "bg-warning",
+    };
+  }
+  return {
+    badgeClass: "bg-success/20 text-success",
+    label: "Safe",
+    rowClass: "border-success/40 bg-success/5",
+    progressClass: "bg-success",
+  };
+}
+
+function expiryProgress(daysRemaining: number | null | undefined, alertDays: number): number {
+  if (daysRemaining === null || daysRemaining === undefined) return 0;
+  if (daysRemaining <= 0) return 100;
+  const windowDays = Math.max(alertDays * 3, 30);
+  const progress = ((windowDays - daysRemaining) / windowDays) * 100;
+  return Math.max(0, Math.min(100, progress));
 }
 
 export function PantryTable({
@@ -54,8 +78,11 @@ export function PantryTable({
   });
 
   return (
-    <div className="space-y-4 rounded-xl border border-border bg-card/95 p-4">
-      <h2 className="text-xl font-bold">Pantry Items (Sorted by Expiry)</h2>
+    <div className="space-y-4 rounded-xl border border-border bg-card p-4">
+      <div className="flex items-center justify-between">
+        <h2 className="text-lg font-semibold text-foreground">Pantry Inventory</h2>
+        <p className="text-xs text-muted-foreground">Sorted by nearest expiry</p>
+      </div>
 
       {items.length === 0 ? (
         <div className="rounded-lg border border-border/50 bg-card p-8 text-center">
@@ -64,17 +91,19 @@ export function PantryTable({
       ) : (
         <div className="space-y-2">
           {sortedItems.map((item, idx) => {
-            const isExpiring = isExpiringWithin3Days(item.expiry_date);
+            const alertDays = 3;
             const isLow = isLowStock(item.quantity);
+            const meta = statusMeta(item.status);
+            const progress = expiryProgress(item.days_remaining, alertDays);
 
             return (
               <div
                 key={item.id}
                 className={cn(
-                  "grid gap-2 md:grid-cols-6 items-center rounded-lg border p-3 transition-all duration-200",
+                  "grid gap-2 md:grid-cols-6 items-center rounded-lg border p-3.5 transition-all duration-200",
                   idx % 2 === 0 ? "bg-muted/30" : "bg-background/40",
-                  isExpiring && "border-destructive/50 bg-destructive/5",
-                  isLow && !isExpiring && "border-warning/50 bg-warning/5",
+                  item.status && meta.rowClass,
+                  isLow && item.status === "Safe" && "border-warning/50 bg-warning/5",
                   "hover:shadow-sm"
                 )}
               >
@@ -86,11 +115,11 @@ export function PantryTable({
                         <AlertCircle className="w-3 h-3" /> Low Stock
                       </span>
                     )}
-                    {isExpiring && (
-                      <span className="inline-flex items-center gap-1 rounded-full bg-destructive/20 px-2 py-1 text-xs font-medium text-destructive">
-                        <Clock className="w-3 h-3" /> Expiring Soon
+                    {item.expiry_date ? (
+                      <span className={cn("inline-flex items-center gap-1 rounded-full px-2 py-1 text-xs font-medium", meta.badgeClass)}>
+                        <Clock className="w-3 h-3" /> {meta.label}
                       </span>
-                    )}
+                    ) : null}
                   </div>
                 </div>
 
@@ -139,6 +168,19 @@ export function PantryTable({
                     <p className="text-xs md:text-sm text-muted-foreground">
                       {item.expiry_date ? new Date(item.expiry_date).toLocaleDateString() : "No expiry"}
                     </p>
+                    <div className="space-y-1">
+                      <p className="text-xs text-muted-foreground">
+                        Remaining: {item.days_remaining ?? "-"} day(s)
+                      </p>
+                      {item.expiry_date ? (
+                        <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
+                          <div
+                            className={cn("h-full transition-all", meta.progressClass)}
+                            style={{ width: `${progress}%` }}
+                          />
+                        </div>
+                      ) : null}
+                    </div>
                     <div className="flex gap-1">
                       <Button
                         size="sm"

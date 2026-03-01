@@ -25,6 +25,8 @@ export interface PantryItem {
   item_name: string;
   quantity: number;
   expiry_date: string | null;
+  days_remaining?: number | null;
+  status?: "Safe" | "Expiring Soon" | "Expired";
   created_at: string;
 }
 
