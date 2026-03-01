@@ -11,6 +11,7 @@ import {
   Copy,
   Download,
   Info,
+  PackagePlus,
   Plus,
   Search,
   Eye,
@@ -489,6 +490,9 @@ export default function Index() {
   const [actionInfo, setActionInfo] = useState("");
   const [usingCachedHistory, setUsingCachedHistory] = useState(false);
   const [shoppingSnapshotAt, setShoppingSnapshotAt] = useState<string | null>(null);
+  const [shoppingSnapshotItems, setShoppingSnapshotItems] = useState<
+    Array<{ name: string; quantity: number }>
+  >([]);
 
   const [groceryItems, setGroceryItems] = useState<GroceryItem[]>([]);
   const [pantryItems, setPantryItems] = useState<PantryItem[]>([]);
@@ -678,6 +682,7 @@ export default function Index() {
   useEffect(() => {
     if (!session?.user?.id) {
       setShoppingSnapshotAt(null);
+      setShoppingSnapshotItems([]);
       return;
     }
     try {
@@ -688,8 +693,14 @@ export default function Index() {
       }
       const parsed = JSON.parse(raw) as { saved_at?: string } | null;
       setShoppingSnapshotAt(parsed?.saved_at ?? null);
+      setShoppingSnapshotItems(
+        Array.isArray((parsed as { items?: Array<{ name: string; quantity: number }> })?.items)
+          ? (parsed as { items: Array<{ name: string; quantity: number }> }).items
+          : [],
+      );
     } catch {
       setShoppingSnapshotAt(null);
+      setShoppingSnapshotItems([]);
     }
   }, [session]);
 
@@ -1406,6 +1417,69 @@ export default function Index() {
     }
   }
 
+  async function addGroceryToPantry(item: GroceryItem) {
+    if (!token) {
+      setProtectedRouteModalOpen(true);
+      setActionError("Please log in to add pantry items.");
+      return;
+    }
+    try {
+      await apiRequest("/api/pantry", token, {
+        method: "POST",
+        body: JSON.stringify({
+          item_name: item.name,
+          quantity: Number(item.quantity ?? 1),
+          expiry_date: null,
+        }),
+      });
+      toast.success(`Added ${item.name} to pantry`);
+      await loadAll();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not add item to pantry.";
+      toast.error(message);
+      setActionError(message);
+    }
+  }
+
+  async function addCheckedItemsToPantry() {
+    if (!token) {
+      setProtectedRouteModalOpen(true);
+      setActionError("Please log in to add pantry items.");
+      return;
+    }
+    const checkedItems = groceryItems.filter((item) => shoppingChecked[item.id]);
+    if (checkedItems.length === 0) {
+      setActionError("Select at least one checked item from Current List.");
+      return;
+    }
+    try {
+      await Promise.all(
+        checkedItems.map((item) =>
+          apiRequest("/api/pantry", token, {
+            method: "POST",
+            body: JSON.stringify({
+              item_name: item.name,
+              quantity: Number(item.quantity ?? 1),
+              expiry_date: null,
+            }),
+          }),
+        ),
+      );
+      const nextChecked = { ...shoppingChecked };
+      checkedItems.forEach((item) => {
+        delete nextChecked[item.id];
+      });
+      setShoppingChecked(nextChecked);
+      toast.success(`Added ${checkedItems.length} checked item(s) to pantry`);
+      await loadAll();
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Could not add checked items to pantry.";
+      setActionError(message);
+      toast.error(message);
+    }
+  }
+
   async function addPantryItem(event: FormEvent) {
     event.preventDefault();
     setActionError("");
@@ -1700,6 +1774,9 @@ export default function Index() {
     try {
       localStorage.setItem(getShoppingSnapshotKey(session.user.id), JSON.stringify(snapshot));
       setShoppingSnapshotAt(snapshot.saved_at);
+      setShoppingSnapshotItems(
+        snapshot.items.map((item) => ({ name: item.name, quantity: Number(item.quantity ?? 0) })),
+      );
       toast.success("Shopping list saved.");
     } catch {
       setActionError("Could not save list for shopping.");
@@ -2060,13 +2137,13 @@ export default function Index() {
               >
         {activeTab === "dashboard" && (
           <section className="space-y-4">
-            <Dashboard pantryItems={pantryItems} summary={summary} />
-            <section className="glass-panel p-5">
-              <h2 className="text-xl font-semibold">Quick Actions</h2>
-              <p className="mt-1 text-sm text-muted-foreground">
-                Use the left navigation to manage grocery list, pantry, budget, history, and analytics.
-              </p>
-            </section>
+            <Dashboard
+              pantryItems={pantryItems}
+              summary={summary}
+              groceryItems={groceryItems}
+              checkedCount={checkedCount}
+              shoppingSnapshotAt={shoppingSnapshotAt}
+            />
           </section>
         )}
 
@@ -2207,9 +2284,20 @@ export default function Index() {
                 </div>
               </div>
               {shoppingSnapshotAt ? (
-                <p className="text-xs text-muted-foreground">
-                  Saved for shopping on {new Date(shoppingSnapshotAt).toLocaleString()}.
-                </p>
+                <div className="rounded-lg border border-border/70 bg-background/50 p-3">
+                  <p className="text-xs text-muted-foreground">
+                    Saved for shopping on {new Date(shoppingSnapshotAt).toLocaleString()}.
+                  </p>
+                  {shoppingSnapshotItems.length > 0 ? (
+                    <div className="mt-2 grid gap-1 text-xs text-muted-foreground sm:grid-cols-2">
+                      {shoppingSnapshotItems.slice(0, 8).map((item, index) => (
+                        <p key={`${item.name}-${index}`}>
+                          {index + 1}. {item.name} (Qty {item.quantity})
+                        </p>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
               ) : null}
 
               <GroceryTable
@@ -2230,6 +2318,7 @@ export default function Index() {
                 onEditCategoryChange={setEditItemCategory}
                 onEditQtyChange={setEditItemQty}
                 onEditPriceChange={setEditItemPrice}
+                onMoveToPantry={addGroceryToPantry}
               />
             </div>
           </section>
@@ -2257,6 +2346,15 @@ export default function Index() {
                 <Button variant="outline" onClick={copyCurrentList} className="gap-2">
                   <Copy className="h-4 w-4" />
                   Copy List
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={addCheckedItemsToPantry}
+                  className="gap-2"
+                >
+                  <PackagePlus className="h-4 w-4" />
+                  Add Checked to Pantry
                 </Button>
                 <Badge variant="secondary" className="rounded-full px-3 py-1 text-xs">
                   {checkedCount}/{groceryItems.length} checked ({currentListCompletion}%)

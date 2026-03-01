@@ -1,6 +1,6 @@
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Trash2, Edit2 } from "lucide-react";
+import { Trash2, Edit2, PackagePlus } from "lucide-react";
 import { Category, GroceryItem } from "@/types/app";
 import { cn } from "@/lib/utils";
 
@@ -22,6 +22,7 @@ interface GroceryTableProps {
   onEditCategoryChange: (value: Category) => void;
   onEditQtyChange: (value: string) => void;
   onEditPriceChange: (value: string) => void;
+  onMoveToPantry: (item: GroceryItem) => void;
 }
 
 export function GroceryTable({
@@ -42,6 +43,7 @@ export function GroceryTable({
   onEditCategoryChange,
   onEditQtyChange,
   onEditPriceChange,
+  onMoveToPantry,
 }: GroceryTableProps) {
   return (
     <div className="space-y-4 rounded-xl border border-border bg-card/95 p-4">
@@ -63,7 +65,7 @@ export function GroceryTable({
                 <div
                   key={item.id}
                   className={cn(
-                    "grid gap-2 md:grid-cols-7 items-center rounded-lg border border-border/50 p-3 transition-all duration-200",
+                    "grid gap-2 md:grid-cols-8 items-center rounded-lg border border-border/50 p-3 transition-all duration-200",
                     idx % 2 === 0 ? "bg-muted/30" : "bg-background/40",
                     "hover:border-primary/50 hover:shadow-sm"
                   )}
@@ -130,6 +132,15 @@ export function GroceryTable({
                       >
                         <Edit2 className="w-3 h-3" />
                         <span className="hidden sm:inline">Edit</span>
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => onMoveToPantry(item)}
+                        className="gap-1 rounded-md"
+                      >
+                        <PackagePlus className="w-3 h-3" />
+                        <span className="hidden sm:inline">Add Pantry</span>
                       </Button>
                       <Button
                         size="sm"
